@@ -1092,6 +1092,7 @@ dependencies = [
  "assert_cmd",
  "async-trait",
  "bollard",
+ "bstr",
  "cargo_metadata",
  "chrono",
  "clap",
@@ -1103,8 +1104,10 @@ dependencies = [
  "dunce",
  "flate2",
  "futures",
- "git2",
  "gix",
+ "gix-object",
+ "gix-pathspec",
+ "gix-status",
  "globset",
  "headers",
  "home",
@@ -2316,19 +2319,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6fb8d784f27acf97159b40fc4db5ecd8aa23b9ad5ef69cdd136d3bc80665f0c0"
 
 [[package]]
-name = "git2"
-version = "0.17.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b989d6a7ca95a362cf2cfc5ad688b3a467be1f87e480b8dad07fee8c79b0044"
-dependencies = [
- "bitflags 1.3.2",
- "libc",
- "libgit2-sys",
- "log",
- "url",
-]
-
-[[package]]
 name = "gix"
 version = "0.54.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2923,6 +2913,24 @@ dependencies = [
  "gix-path",
  "libc",
  "windows",
+]
+
+[[package]]
+name = "gix-status"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "082801c42ba707f2407b5cce3d99b89cfa84f3794962946dc94cfdc00ae522fa"
+dependencies = [
+ "bstr",
+ "filetime",
+ "gix-features",
+ "gix-fs",
+ "gix-hash",
+ "gix-index",
+ "gix-object",
+ "gix-path",
+ "gix-pathspec",
+ "thiserror",
 ]
 
 [[package]]
@@ -3709,18 +3717,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4668fb0ea861c1df094127ac5f1da3409a82116a4ba74fca2e58ef927159bb3"
 
 [[package]]
-name = "libgit2-sys"
-version = "0.15.2+1.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a80df2e11fb4a61f4ba2ab42dbe7f74468da143f1a75c74e11dee7c813f694fa"
-dependencies = [
- "cc",
- "libc",
- "libz-sys",
- "pkg-config",
-]
-
-[[package]]
 name = "libm"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3733,18 +3729,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "afc22eff61b133b115c6e8c74e818c628d6d5e7a502afea6f64dee076dd94326"
 dependencies = [
  "cc",
- "pkg-config",
- "vcpkg",
-]
-
-[[package]]
-name = "libz-sys"
-version = "1.1.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d97137b25e321a73eef1418d1d5d2eda4d77e12813f8e6dead84bc52c5870a7b"
-dependencies = [
- "cc",
- "libc",
  "pkg-config",
  "vcpkg",
 ]

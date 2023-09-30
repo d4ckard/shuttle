@@ -57,15 +57,15 @@ url = "2.3.1"
 uuid = { workspace = true, features = ["v4"] }
 walkdir = "2.3.3"
 webbrowser = "0.8.2"
+gix-status = "0.1.0"
+gix-pathspec = "0.3.0"
+gix-object = "0.37.0"
+bstr = { version = "1.6.2", default-features = false }
 
 [dependencies.gix]
 version = "0.54"
 default-features = false
 features = [ "blocking-http-transport-reqwest-rust-tls", "worktree-mutation" ]
-
-[dependencies.git2]
-version = "0.17.2"
-default-features = false
 
 [dependencies.shuttle-common]
 workspace = true

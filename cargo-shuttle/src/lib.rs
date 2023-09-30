@@ -39,6 +39,7 @@ use shuttle_service::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
+use bstr::BStr;
 use cargo_metadata::Message;
 use clap::{parser::ValueSource, CommandFactory, FromArgMatches};
 use clap_complete::{generate, Shell};
@@ -48,7 +49,12 @@ use dialoguer::{theme::ColorfulTheme, Confirm, FuzzySelect, Input, Password};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use futures::{StreamExt, TryFutureExt};
-use git2::{Repository, StatusOptions};
+use gix::index::decode;
+use gix::progress;
+use gix::Repository;
+use gix_status::index_as_worktree;
+use gix_status::index_as_worktree::content::FastEq;
+use gix_status::index_as_worktree::{Options, Recorder};
 use globset::{Glob, GlobSetBuilder};
 use ignore::overrides::OverrideBuilder;
 use ignore::WalkBuilder;
@@ -1255,32 +1261,35 @@ impl Shuttle {
             ..Default::default()
         };
 
-        if let Ok(repo) = Repository::discover(working_directory) {
+        if let Ok(repo) = gix::discover(working_directory) {
             let repo_path = repo
-                .workdir()
+                .work_dir()
                 .context("getting working directory of repository")?;
             let repo_path = dunce::canonicalize(repo_path)?;
             trace!(?repo_path, "found git repository");
 
-            let dirty = self.is_dirty(&repo);
+            let dirty = is_dirty(&repo);
             if !args.allow_dirty && dirty.is_err() {
                 bail!(dirty.unwrap_err());
             }
             deployment_req.git_dirty = Some(dirty.is_err());
 
-            if let Ok(head) = repo.head() {
-                // This is typically the name of the current branch
-                // It is "HEAD" when head detached, for example when a tag is checked out
-                deployment_req.git_branch = head
-                    .shorthand()
-                    .map(|s| s.chars().take(GIT_STRINGS_MAX_LENGTH).collect());
-                if let Ok(commit) = head.peel_to_commit() {
-                    deployment_req.git_commit_id = Some(commit.id().to_string());
-                    // Summary is None if error or invalid utf-8
-                    deployment_req.git_commit_msg = commit
-                        .summary()
-                        .map(|s| s.chars().take(GIT_STRINGS_MAX_LENGTH).collect());
-                }
+            if let Ok(name) = repo.head_name() {
+                deployment_req.git_branch = name.map(|name| {
+                    let mut git_branch =
+                        String::from_utf8_lossy(name.shorten().as_ref()).to_string();
+                    git_branch.truncate(GIT_STRINGS_MAX_LENGTH);
+                    git_branch
+                });
+            }
+
+            if let Ok(commit) = repo.head_commit() {
+                deployment_req.git_commit_id =
+                    Some(String::from_utf8_lossy(commit.id.as_slice()).to_string());
+                let mut git_commit_msg =
+                    String::from_utf8_lossy(commit.message()?.summary().as_ref()).to_string();
+                git_commit_msg.truncate(GIT_STRINGS_MAX_LENGTH);
+                deployment_req.git_commit_msg = Some(git_commit_msg);
             }
         }
 
@@ -1733,39 +1742,95 @@ impl Shuttle {
 
         Ok(bytes)
     }
+}
 
-    fn is_dirty(&self, repo: &Repository) -> Result<()> {
-        let mut status_options = StatusOptions::new();
-        status_options.include_untracked(true);
-        let statuses = repo
-            .statuses(Some(&mut status_options))
-            .context("getting status of repository files")?;
+/// Check if the given Git repository has uncommitted changes.
+/// In that case, return an error message describing which files
+/// have changed.
+fn is_dirty(repo: &Repository) -> Result<()> {
+    let git_dir = repo.git_dir();
+    let work_dir = repo
+        .work_dir()
+        .context("Worktree of Git repository is not checkout")?;
 
-        if !statuses.is_empty() {
-            let mut error = format!(
-                "{} files in the working directory contain changes that were not yet committed into git:\n",
-                statuses.len()
-            );
+    let mut index = gix::index::File::at(
+        git_dir.join("index"),
+        gix::hash::Kind::Sha1,
+        false,
+        decode::Options::default(),
+    )
+    .context("Failed to create index from file")?;
+    let mut recorder = Recorder::default();
+    let search = gix::pathspec::Search::from_specs(to_pathspecs(&[]), None, Path::new(""))
+        .context("Failed to create search")?;
+    index_as_worktree(
+        &mut index,
+        work_dir,
+        &mut recorder,
+        FastEq,
+        |_, _| Ok::<_, std::convert::Infallible>(gix_object::BlobRef { data: &[] }),
+        &mut progress::Discard,
+        Pathspec(search),
+        Options::default(),
+    )
+    .context("Failed to compute changes")?;
 
-            for status in statuses.iter() {
-                trace!(
-                    path = status.path(),
-                    status = ?status.status(),
-                    "found file with updates"
-                );
+    let changes = recorder.records;
+    if !changes.is_empty() {
+        let mut err_msg = format!(
+            "{} files in the working directory contain \
+	     changes that were not yet committed into git:\n",
+            changes.len()
+        );
 
-                let rel_path = status.path().context("getting path of changed file")?;
+        for change in &changes {
+            let (rel_path, status, _conflict) = change;
+            let rel_path = String::from_utf8_lossy(rel_path.as_ref()).to_string();
+            trace!(path = rel_path, status = ?status, "found file with updates");
 
-                writeln!(error, "{rel_path}").expect("to append error");
-            }
-
-            writeln!(error).expect("to append error");
-            writeln!(error, "To proceed despite this and include the uncommitted changes, pass the `--allow-dirty` flag").expect("to append error");
-
-            bail!(error);
+            writeln!(err_msg, "{rel_path}").expect("to append error");
         }
 
+        writeln!(err_msg).expect("to append error");
+        writeln!(
+            err_msg,
+            "To proceed despite this and include the uncommitted \
+	     changes, pass the `--allow-dirty` flag"
+        )
+        .expect("to append error");
+
+        bail!(err_msg);
+    } else {
         Ok(())
+    }
+}
+
+/// Helper for `is_dirty`.
+fn to_pathspecs(input: &[&str]) -> Vec<gix_pathspec::Pattern> {
+    input
+        .iter()
+        .map(|pattern| {
+            gix_pathspec::parse(pattern.as_bytes(), Default::default()).expect("known to be valid")
+        })
+        .collect()
+}
+
+/// Implementation of gix_status::Pathspec used in `is_dirty`.
+/// It's adapted from the `gitoxide` test suite: https://github.com/Byron/gitoxide/blob/3d60c0245ec4b787cfcb111319d730a6e5031ef4/gix-status/tests/status/index_as_worktree.rs#L259
+#[derive(Clone)]
+struct Pathspec(gix::pathspec::Search);
+
+impl gix_status::Pathspec for Pathspec {
+    fn common_prefix(&self) -> &BStr {
+        self.0.common_prefix()
+    }
+
+    fn is_included(&mut self, relative_path: &BStr, is_dir: Option<bool>) -> bool {
+        self.0
+            .pattern_matching_relative_path(relative_path, is_dir, &mut |_, _, _, _| {
+                unreachable!("we don't use attributes in our pathspecs")
+            })
+            .map_or(false, |m| !m.is_excluded())
     }
 }
 
